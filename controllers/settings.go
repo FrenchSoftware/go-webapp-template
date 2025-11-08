@@ -7,7 +7,7 @@ import (
 	"github.com/frenchsoftware/libvalidator/validator"
 	"github.com/hyperstitieux/template/auth"
 	"github.com/hyperstitieux/template/database/repositories"
-	"github.com/hyperstitieux/template/pages"
+	"github.com/hyperstitieux/template/views/pages"
 )
 
 type SettingsController struct {

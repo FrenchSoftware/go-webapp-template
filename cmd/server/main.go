@@ -10,8 +10,8 @@ import (
 	"github.com/hyperstitieux/template/controllers"
 	"github.com/hyperstitieux/template/database"
 	"github.com/hyperstitieux/template/database/repositories"
-	"github.com/hyperstitieux/template/pages"
 	"github.com/hyperstitieux/template/router"
+	"github.com/hyperstitieux/template/views/pages"
 	"github.com/joho/godotenv"
 )
 

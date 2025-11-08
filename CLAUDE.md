@@ -50,12 +50,14 @@ auth/
   ├── auth.go               # Context-based auth utilities
   ├── middleware.go         # Auth middleware
   └── cookie.go             # Session cookie management
-controllers/                # HTTP controllers for features
-pages/                      # Page handlers (Home, Settings, etc.)
+controllers/                # HTTP controllers with business logic (POST handlers)
 views/
   ├── layouts/base.go       # Base HTML layout
+  ├── pages/                # Pure rendering functions (GET handlers, no business logic)
+  │   └── pages.go          # Page renderers: Home, Settings, SettingsWithErrors, etc.
   ├── components/           # Reusable UI components
   │   └── ui/               # Basecoat UI wrappers (Card, Dialog, etc.)
+  ├── context.go            # View context helpers
   ├── basecoat.css          # Basecoat UI CSS framework
   └── styles.css            # Custom Tailwind CSS (input file)
 public/                     # Static assets (CSS, JS, images)
@@ -75,6 +77,34 @@ public/                     # Static assets (CSS, JS, images)
 - Handler signature: `func(w http.ResponseWriter, r *http.Request) error`
 - Error handling wrapped automatically via `Handle()` middleware
 - HTML helpers: `router.HTML(renderer)` sets Content-Type automatically
+
+**Pages vs Controllers Pattern (CRITICAL)**
+This is the most important architectural pattern in this codebase:
+
+- **Pages (`views/pages/pages.go`)**: Pure rendering functions with ZERO business logic
+  - Only render HTML using `libhtml`
+  - Accept pre-validated data and render it
+  - Accept validation errors to re-render forms with error messages
+  - Example: `Settings()`, `SettingsWithErrors(w, r, errs)`
+  - Used for GET routes: `r.Get("/settings", pages.Settings)`
+
+- **Controllers (`controllers/`)**: Handle ALL business logic
+  - Form validation using `libvalidator`
+  - Database operations via repositories
+  - Authentication checks
+  - Business rules and data processing
+  - Redirect on success OR call page renderers with errors on failure
+  - Example: `SettingsController.UpdateProfile()` validates form, updates DB, redirects OR calls `pages.SettingsWithErrors()`
+  - Used for POST routes: `r.Post("/settings/update-profile", settingsController.UpdateProfile)`
+
+**Routing Convention:**
+```go
+// GET routes → page renderers (pure rendering, no logic)
+r.Get("/settings", pages.Settings)
+
+// POST routes → controllers (business logic, then redirect or re-render)
+r.Post("/settings/update-profile", settingsController.UpdateProfile)
+```
 
 **Middleware Chain** (via `justinas/alice`)
 1. Recovery (panic handling)
@@ -185,63 +215,149 @@ This project uses Basecoat UI, a Tailwind CSS-based component library that works
 
 ## Common Patterns
 
-### Creating a New Page
+### Creating a New Page (Read-Only View)
 
-1. Add handler in `pages/pages.go`:
+For simple pages that just display data with no forms:
+
+1. Add pure rendering function in `views/pages/pages.go`:
 ```go
 func MyPage(w http.ResponseWriter, r *http.Request) error {
-    user := auth.GetCurrentUser(r)
+    user := auth.GetCurrentUser(r) // nil if not authenticated
+
     page := layouts.Base(user, r, "Page Title",
         html.Div(
-            attr.Class("container"),
-            html.Text("Content"),
+            attr.Class("container mx-auto px-8 py-8"),
+            html.H1(attr.Class("text-3xl font-semibold"), html.Text("My Page")),
+            html.Text("Content goes here"),
         ),
     )
+
     w.Header().Set("Content-Type", "text/html; charset=utf-8")
     return page.Render(w)
 }
 ```
 
-2. Register route in `cmd/server/main.go`:
+2. Register GET route in `cmd/server/main.go`:
 ```go
 r.Get("/mypage", pages.MyPage)
 ```
 
-### Adding a New Controller
+### Adding a Page with a Form (Full Pattern)
 
-1. Create file in `controllers/` with struct and constructor:
+When you have a form that submits data, you need BOTH a page renderer AND a controller:
+
+**Step 1: Create page renderer(s) in `views/pages/pages.go`:**
 ```go
-type MyController struct {
-    users *repositories.UsersRepository
+// Main page renderer (no errors)
+func MyFormPage(w http.ResponseWriter, r *http.Request) error {
+    return MyFormPageWithErrors(w, r, nil)
 }
 
-func NewMyController(users *repositories.UsersRepository) *MyController {
-    return &MyController{users: users}
+// Page renderer that can show validation errors
+func MyFormPageWithErrors(w http.ResponseWriter, r *http.Request, errs validator.ValidationErrors) error {
+    user := views.GetUser(r) // Required if page needs auth
+    if user == nil {
+        http.Redirect(w, r, "/auth/google?redirect=/myform", http.StatusTemporaryRedirect)
+        return nil
+    }
+
+    page := layouts.Base(user, r, "My Form",
+        html.Form(
+            attr.Action("/myform/submit"),
+            attr.Method("POST"),
+            html.Div(
+                attr.Class("field"),
+                html.Label(attr.For("name"), html.Text("Name")),
+                html.Input(
+                    attr.Type("text"),
+                    attr.Name("name"),
+                    attr.ClassIfElse(
+                        errs != nil && errs.Has("name"),
+                        "input border-destructive",
+                        "input",
+                    ),
+                ),
+                html.If(errs != nil && errs.Has("name"),
+                    html.P(
+                        attr.Class("text-xs text-destructive"),
+                        html.Text(errs.Get("name")),
+                    ),
+                ),
+            ),
+            html.Button(attr.Type("submit"), attr.Class("btn-primary"), html.Text("Submit")),
+        ),
+    )
+
+    w.Header().Set("Content-Type", "text/html; charset=utf-8")
+    return page.Render(w)
+}
+```
+
+**Step 2: Create controller in `controllers/myform_controller.go`:**
+```go
+package controllers
+
+import (
+    "net/http"
+    "github.com/frenchsoftware/libvalidator/validator"
+    "github.com/hyperstitieux/template/auth"
+    "github.com/hyperstitieux/template/database/repositories"
+    "github.com/hyperstitieux/template/pages"
+)
+
+type MyFormController struct {
+    repo *repositories.SomeRepository
 }
 
-func (c *MyController) Handle(w http.ResponseWriter, r *http.Request) error {
-    // Handle request
+func NewMyFormController(repo *repositories.SomeRepository) *MyFormController {
+    return &MyFormController{repo: repo}
+}
+
+func (c *MyFormController) Submit(w http.ResponseWriter, r *http.Request) error {
+    // Check authentication
+    user := auth.GetCurrentUser(r)
+    if user == nil {
+        http.Redirect(w, r, "/auth/google?redirect=/myform", http.StatusTemporaryRedirect)
+        return nil
+    }
+
+    // Validate form data
+    v := validator.New(
+        validator.Field("name").Required().MinLength(1).MaxLength(50),
+    )
+    ok, errs := v.Validate(r)
+    if !ok {
+        // Re-render page with validation errors
+        return pages.MyFormPageWithErrors(w, r, errs)
+    }
+
+    // Business logic here
+    name := r.FormValue("name")
+    // ... save to database via repository ...
+
+    // Redirect on success (Post-Redirect-Get pattern)
+    http.Redirect(w, r, "/myform?success=true", http.StatusSeeOther)
     return nil
 }
 ```
 
-2. Initialize and register in `cmd/server/main.go`
-
-### Working with Forms
-
-Use `github.com/frenchsoftware/libvalidator` for validation:
+**Step 3: Register routes in `cmd/server/main.go`:**
 ```go
-func UpdateProfile(w http.ResponseWriter, r *http.Request) error {
-    v := validator.New()
-    name := v.Required("name", r.FormValue("name"), "Name is required")
+// Initialize controller
+myFormController := controllers.NewMyFormController(someRepo)
 
-    if v.HasErrors() {
-        return pages.SettingsWithErrors(w, r, v.Errors)
-    }
-
-    // Process valid data
-}
+// Register routes
+r.Get("/myform", pages.MyFormPage)           // GET = page renderer
+r.Post("/myform/submit", myFormController.Submit)  // POST = controller
 ```
+
+### Key Rules for Forms
+
+1. **Page renders the form** → displays it and shows validation errors
+2. **Controller processes the form** → validates, saves data, redirects
+3. **On validation failure** → controller calls page renderer with errors
+4. **On success** → controller redirects (Post-Redirect-Get pattern)
+5. **Never put business logic in pages** → keep them pure rendering functions
 
 ### Creating UI Components
 
