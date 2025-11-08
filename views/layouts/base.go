@@ -42,6 +42,9 @@ func Base(user *models.User, r *http.Request, title string, children ...html.Nod
 				// Lucide Icons
 				html.Script(attr.Src("https://unpkg.com/lucide@latest")),
 
+				// Basecoat UI JavaScript (must load before app.js)
+				html.Script(attr.Src("/js/basecoat.js"), html.Attr("defer", "")),
+
 				// Javascript
 				html.Script(attr.Src("/js/app.js"), html.Attr("defer", "")),
 
