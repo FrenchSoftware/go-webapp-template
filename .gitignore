@@ -1,0 +1,6 @@
+./server
+bin
+.env
+tmp
+app.db
+public/styles.css

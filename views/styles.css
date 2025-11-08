@@ -1,0 +1,7 @@
+@import "tailwindcss";
+@import "./basecoat.css";
+
+@theme {
+  --font-sans: "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-workbench: "Workbench", ui-monospace, monospace;
+}
